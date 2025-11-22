@@ -1,0 +1,275 @@
+Задаем имена
+hostnamectl hostname isp.au-team.irpo
+hostnamectl hostname hq-rtr.au-team.irpo
+hostnamectl hostname hq-srv.au-team.irpo
+hostnamectl hostname br-rtr.au-team.irpo
+hostnamectl hostname br-srv.au-team.irpo
+hostnamectl hostname hq-cli.au-team.irpo
+
+На всех устройствах необходимо сконфигурировать IPv4 
+На маршрутизаторах (ISP/BR-RTR/HQ-RTR) включаем параметр, отвечающий за пересылку пакетов: 
+echo “net.ipv4.ip_forward=1” >> /etc/sysctl.conf 
+sysctl -p
+КАВЫЧКИ НЕ ДАЮТ ВСТАВЛЯТЬ. ИХ ДОБАВЛЯЕМ САМИ
+echo net.ipv4.ip_forward=1 >> /etc/sysctl.conf 
+sysctl -p
+
+Имя устройства       	IP-адрес 			Шлюз по умолчанию 
+ISP 	                ens33: DHCP         			------
+			ens34: 172.16.4.1 /28 
+			ens35: 172.16.5.1 /28 
+	 
+HQ-RTR 			ens33: 172.16.4.2/28 			172.16.4.1
+			ens34.vlan100: 192.168.100.1/26 
+			ens34.vlan200: 192.168.200.1/28 
+			ens34.vlan999: 192.168.99.1/29 	
+	
+BR-RTR 			ens33: 172.16.5.2/28     		 172.16.5.1
+			ens34: 172.30.100.1/27
+ 	
+HQ-SRV 			ens33.vlan100: 192.168.100.10/26         192.168.100.1
+ 
+BR-SRV 			ens33: 172.30.100.10/27 	        172.30.100.1
+ 
+HQ-CLI 			ens33.vlan200: DHCP 	                  DHCP 
+ОБНОВЛЯЕМ ИНТЕРФЕЙСЫ ОБЯЗАТЕЛЬНО
+
+динамическая сетевая трансляция
+НА ISP
+dnf install iptables-services -y
+systemctl enable --now iptables
+iptables -F
+iptables -A FORWARD -s 172.16.0.0/16 -j ACCEPT
+iptables -A FORWARD -d 172.16.0.0/16 -j ACCEPT
+iptables -t nat -A POSTROUTING -o ens33 -s 172.16.0.0/16 -j MASQUERADE
+systemctl stop firewalld
+systemctl disable firewalld
+iptables-save > /etc/sysconfig/iptables
+ПРОВЕРЯЕМ ПИНГИ НА 10.39.0.1 С HQ-RTR и BR-RTR
+
+Создайте пользователя sshuser на серверах HQ-SRV и BR-SRV
+useradd -m -U -s /bin/bash -u 1010 sshuser
+passwd sshuser
+P@ssw0rd
+P@ssw0rd
+echo “sshuser ALL=(ALL) NOPASSWD: ALL” >> /etc/sudoers
+КАВЫЧКИ НЕ ДАЮТ ВСТАВЛЯТЬ. ИХ ДОБАВЛЯЕМ САМИ
+echo sshuser ALL=(ALL) NOPASSWD: ALL >> /etc/sudoers
+
+Создайте пользователя net_admin на маршрутизаторах HQ-RTR и
+BR-RTR
+useradd -m -U -s /bin/bash net_admin
+passwd net_admin
+P@$$w0rd
+P@$$w0rd
+echo “net_admin ALL=(ALL) NOPASSWD: ALL” >> /etc/sudoers
+КАВЫЧКИ НЕ ДАЮТ ВСТАВЛЯТЬ. ИХ ДОБАВЛЯЕМ САМИ
+echo net_admin ALL=(ALL) NOPASSWD: ALL >> /etc/sudoers
+
+Настройка безопасного удаленного доступа на серверах HQ-SRV
+и BR- SRV
+Создаём баннер
+echo “Authorized access only” > /etc/ssh/banner.txt
+КАВЫЧКИ НЕ ДАЮТ ВСТАВЛЯТЬ. ИХ ДОБАВЛЯЕМ САМИ
+echo Authorized access only > /etc/ssh/banner.txt
+Настраиваем SSH
+nano /etc/ssh/sshd_config
+Port 2024
+AllowUsers sshuser
+MaxAuthTries 2
+Banner /etc/ssh/banner.txt
+
+Разрешаем подключение по порту 2024
+semanage port -m -t ssh_port_t -p tcp 2024
+
+Перезапускаем ssh
+systemctl restart sshd
+
+Далее с HQ-RTR и BR-RTR проверяем доступ до соответствующих
+серверов в своей локальной сети:
+ssh -l sshuser 172.30.100.10 -p 2024 BR-RTR
+ssh -l sshuser 192.168.100.10 -p 2024 HQ-RTR
+
+Заходим в nmtui
+Стрелочка вправо – добавить
+Выбираем IP-Туннель
+HQ-RTR  			BR-RTR
+Имя профиля tun0 		Имя профиля tun0
+Устройство tun0			Устройство tun0
+Режим GRE			Режим GRE
+Родительский ens33		Родительский ens33
+Локальный IP 172.16.4.2		Локальный IP 172.16.5.2
+Удаленный IP 172.16.5.2		Удаленный IP 172.16.4.2
+
+Конфигурация IPv4 Вручную	Конфигурация IPv4 Вручную
+Адреса 10.10.10.1/30		Адреса 10.10.10.2/30
+
+ПОСЛЕ ЭТОГО НА ОБОИХ РОУТЕРАХ ПИШЕМ:
+nmcli connection modify tun0 ip-tunnel.ttl 64
+И перезапускаем tunnel через nmtui (выключаем и включаем
+интерфейс)
+Проверяем пинги с двух роутеров на 10.10.10.1 и 10.10.10.2
+
+HQ-RTR И BR-RTR
+dnf install frr
+systemctl enable --now frr
+nano /etc/frr/daemons
+заменить no на yes в ospfd=yes
+systemctl restart frr
+
+vtysh
+ДАЛЕЕ РАБОТА КАК В CISCO
+conf t
+router ospf
+Команды для HQ-RTR        	Команды для BR-RTR
+network 192.168.100.0/26 area 0 network 172.30.100.0/27 area 0
+network 192.168.200.0/28 area 0 network 10.10.10.0/30 area 0
+network 192.168.99.0/29 area 0
+network 10.10.10.0/30 area 0
+ospf router-id 172.16.4.2 	ospf router-id 172.16.5.2
+passive-interface ens33 	passive-interface ens33
+passive-interface ens34 	passive-interface ens34
+passive-interface ens35
+
+area 0 authentication
+exit
+interface tun0
+ip ospf authentication
+ip ospf authentication-key P@ssw0rd
+do wr
+exit
+exit
+exit
+
+НА HQ-RTR И BR-RTR:
+systemctl --now enable firewalld
+firewall-cmd --set-default-zone=trusted
+firewall-cmd --zone=trusted --add-masquerade --permanent
+systemctl restart firewalld
+
+НА HQ-RTR
+dnf install dhcp-server
+nano /etc/dhcp/dhcpd.conf
+
+Пишем это в файле:
+subnet 192.168.200.0 netmask 255.255.255.240 {
+range 192.168.200.2 192.168.200.14;
+option routers 192.168.200.1;
+option broadcast-address 192.168.200.15;
+option domain-name-servers 192.168.100.10;
+option domain-name “au-team.irpo”;
+КАВЫЧКИ НЕ ДАЮТ ВСТАВЛЯТЬ. ИХ ДОБАВЛЯЕМ САМИ
+option domain-name au-team.irpo;
+}
+это уже после на самом hq-rtr
+systemctl enable --now dhcpd
+dhcpd
+
+ПРОВЕРЯЕМ НА HQ-RTR, ЧТО ЕСТЬ ЗАПИСЬ В ФАЙЛЕ, УКАЗЫВАЮЩАЯ
+НА ПОЛУЧЕНИЕ АДРЕС КЛИЕНТОМ: ЕСЛИ на HQ-CLI перезагрузить интрефейс
+и ввести ip a ,то должен появиться ip 192.168.200.2
+cat /var/lib/dhcpd/dhcpd.leases
+
+НА HQ-SRV
+dnf install bind
+nano /etc/named.conf
+Изменить строчки
+listen-on port 53 { any; };
+allow-query { any; };
+forwarders { 10.39.0.1; };
+И в конец добавить:
+zone "au-team.irpo" IN { 
+type master; 
+file "/opt/dns/au-team.irpo";
+};
+zone "100.168.192.in-addr.arpa" IN {
+type master;
+file "/opt/dns/100.168.192.in-addr.arpa";
+};
+zone "200.168.192.in-addr.arpa" IN { 
+type master;
+file "/opt/dns/200.168.192.in-addr.arpa";
+};
+include "/etc/named.rfc1912.zones";
+include "/etc/named.root.key";
+
+КАВЫЧКИ НЕ ДАЮТ ВСТАВЛЯТЬ. ИХ ДОБАВЛЯЕМ САМИ
+zone au-team.irpo IN { 
+type master; 
+file /opt/dns/au-team.irpo;
+};
+zone 100.168.192.in-addr.arpa IN {
+type master;
+file /opt/dns/100.168.192.in-addr.arpa;
+};
+zone 200.168.192.in-addr.arpa IN { 
+type master:
+file /opt/dns/200.168.192.in-addr.arpa;
+};
+include /etc/named.rfc1912.zones;
+include /etc/named.root.key;
+
+Далее 
+mkdir /opt/dns
+cd /opt/dns
+cp /var/named/named.empty au-team.irpo
+nano au-team.irpo
+
+au-team.irpo. IN SOA au-team.irpo. au-team.irpo. (
+
+	NS hq-srv.au-team.irpo.
+hq-rtr A 192.168.100.1
+hq-rtr A 192.168.200.1
+br-rtr A 172.30.100.1
+hq-srv A 192.168.100.10
+hq-cli A 192.168.200.2
+br-srv A 172.30.100.10
+wiki   CNAME hq-rtr.au-team.irpo.
+moodle CNAME hq-rtr.au-team.irpo.
+
+cp /var/named/named.empty 100.168.192.in-addr.arpa
+nano 100.168.192.in-addr.arpa
+
+
+@      IN SOA au-team.irpo. au-team.irpo. (
+
+	NS  hq-srv.au-team.irpo.
+1	PTR hq-rtr
+10	PTR hq-srv
+
+cp /var/named/named.empty 200.168.192.in-addr.arpa
+nano 200.168.192.in-addr.arpa
+
+@      IN SOA au-team.irpo. au-team.irpo. (
+
+	NS  hq-srv.au-team.irpo.
+1	PTR hq-rtr
+2	PTR hq-cli
+
+это уже в консоли
+chmod -R 777 /opt/dns
+ПРОВЕРЯЕМ КОНФИГУРАЦИЮ И ИСПРАВЛЯЕМ ОШИБКИ ЕСЛИ ЕСТЬ
+named-checkconf -z
+systemctl restart named
+
+Далее заходим в nmtui и меняем ДНС сервер с (10.39.0.1) на
+192.168.100.10. Так же указываем домен поиска au-team.irpo.
+После этого в nmtui переходим на вкладку «Активировать
+подключение». Выключаем и включаем интерфейс, на который ставили ДНС.
+НА HQ-CLI И ПРОВЕРЯЕМ РАБОТОСПОБНОСТЬ
+ping br-rtr
+ping br-srv
+ping hq-rtr
+ping hq-srv
+ping ya.ru
+
+на всякий случай если спросят как это делать
+Настройте часовой пояс на всех устройствах, согласно месту
+проведения экзамена.
+timedatectl set-timezone Europe/Moscow
+timedatectl (ПРОВЕРИТЬ ЗОНУ, ПО ЗАДАНИЮ ВРЕМЯ МЕНЯТЬ НЕ
+ПРОСЯТ
+
+
+
+
