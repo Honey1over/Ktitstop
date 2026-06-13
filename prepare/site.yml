@@ -1,0 +1,29 @@
+services:
+  db:
+    image: mariadb:10.11
+    container_name: db
+    environment:
+      MARIADB_DATABASE: testdb
+      MARIADB_USER: test
+      MARIADB_PASSWORD: Passw0rd
+      MARIADB_ROOT_PASSWORD: Passw0rd
+    volumes:
+      - db_data:/var/lib/mysql
+    restart: unless-stopped
+  testapp:
+    image: site
+    container_name: testapp
+    environment:
+      DB_TYPE: maria
+      DB_HOST: db
+      DB_NAME: testdb
+      DB_USER: test
+      DB_PASS: Passw0rd
+      DB_PORT: 3306
+    ports:
+      - "8080:8000"
+    depends_on:
+      - db
+    restart: unless-stopped
+volumes:
+  db_data:
